@@ -174,6 +174,19 @@ export namespace Session {
   })
   export type GlobalInfo = z.output<typeof GlobalInfo>
 
+  export const BackgroundTask = z.object({
+    sessionID: z.string(),
+    result: z.string(),
+    status: z.enum(["success", "error"]),
+    description: z.string(),
+    agent: z.string(),
+    model: z.object({
+      providerID: z.string(),
+      modelID: z.string(),
+    }),
+  })
+  export type BackgroundTask = z.output<typeof BackgroundTask>
+
   export const Event = {
     Created: BusEvent.define(
       "session.created",
@@ -205,6 +218,13 @@ export namespace Session {
       z.object({
         sessionID: z.string().optional(),
         error: MessageV2.Assistant.shape.error,
+      }),
+    ),
+    BackgroundTaskCompleted: BusEvent.define(
+      "session.background_task_completed",
+      z.object({
+        sessionID: z.string(),
+        task: BackgroundTask,
       }),
     ),
   }
