@@ -11,11 +11,11 @@ export namespace SessionBackground {
 
   const state = Instance.state(
     () => {
-      const pending = new Map<string, Session.BackgroundTask[]>()
-      return { pending, initialized: false }
+      const staged = new Map<string, Session.BackgroundTask[]>()
+      return { staged, initialized: false }
     },
     async (current) => {
-      current.pending.clear()
+      current.staged.clear()
       current.initialized = false
     },
   )
@@ -26,75 +26,81 @@ export namespace SessionBackground {
     }
     state().initialized = true
 
-    Bus.subscribe(Session.Event.BackgroundTaskCompleted, (event) => {
+    Bus.subscribe(Session.Event.BackgroundTaskCompleted, async (event) => {
       const sessionID = event.properties.sessionID
       const task = event.properties.task
-      const pending = state().pending
-      const tasks = pending.get(sessionID) ?? []
 
-      tasks.push(task)
-      pending.set(sessionID, tasks)
-
-      const status = SessionStatus.get(sessionID)
-      if (status.type !== "idle") {
-        return
-      }
-
-      flushQueue(sessionID).catch((err) => {
-        log.error("failed to process background tasks", { sessionID, error: err })
+      await stageTask(sessionID, task).catch((err) => {
+        log.error("failed to stage background task", { sessionID, error: err })
+      })
+      await wake(sessionID).catch((err) => {
+        log.error("failed to wake for staged tasks", { sessionID, error: err })
       })
     })
 
-    Bus.subscribe(SessionStatus.Event.Status, (event) => {
-      if (event.properties.status.type !== "idle") {
-        return
-      }
-
+    Bus.subscribe(SessionStatus.Event.Status, async (event) => {
       const sessionID = event.properties.sessionID
 
-      flushQueue(sessionID).catch((err) => {
-        log.error("failed to process background tasks", { sessionID, error: err })
+      await wake(sessionID).catch((err) => {
+        log.error("failed to wake for staged tasks", { sessionID, error: err })
       })
     })
   }
 
-  async function flushQueue(sessionID: string) {
+  async function wake(sessionID: string) {
+    const session = await Session.get(sessionID)
+    if (!session) {
+      return
+    }
+
     const s = state()
-    const tasks = s.pending.get(sessionID)
+    const tasks = s.staged.get(sessionID)
     if (!tasks || tasks.length === 0) {
       return
     }
 
-    s.pending.set(sessionID, [])
-
-    for (const task of tasks) {
-      const msgID = Identifier.ascending("message")
-
-      await Session.updateMessage({
-        id: msgID,
-        sessionID,
-        role: "user",
-        time: { created: Date.now() },
-        agent: task.agent,
-        model: task.model,
-      })
-
-      const output = [`Session ID: ${task.sessionID}`, "", "<task_result>", task.result, "</task_result>"].join("\n")
-      const text =
-        task.status === "success"
-          ? `Background task '${task.description}' completed.\n${output}`
-          : `Background task '${task.description}' failed: ${task.result}`
-
-      await Session.updatePart({
-        id: Identifier.ascending("part"),
-        messageID: msgID,
-        sessionID,
-        type: "text",
-        synthetic: true,
-        text,
-      })
+    const status = SessionStatus.get(sessionID)
+    if (status.type !== "idle") {
+      return
     }
 
+    s.staged.delete(sessionID)
+    SessionStatus.set(sessionID, { type: "busy" })
     await SessionPrompt.loop({ sessionID })
+  }
+
+  async function stageTask(sessionID: string, task: Session.BackgroundTask) {
+    await updateTaskMessage(sessionID, task)
+
+    const staged = state().staged
+    const tasks = staged.get(sessionID) ?? []
+    staged.set(sessionID, tasks)
+    tasks.push(task)
+  }
+
+  async function updateTaskMessage(sessionID: string, task: Session.BackgroundTask) {
+    const msgID = Identifier.ascending("message")
+    const output = [`Session ID: ${task.sessionID}`, "", "<task_result>", task.result, "</task_result>"].join("\n")
+    const text =
+      task.status === "success"
+        ? `Background task '${task.description}' completed.\n${output}`
+        : `Background task '${task.description}' failed: ${task.result}`
+
+    await Session.updateMessage({
+      id: msgID,
+      sessionID,
+      role: "user",
+      time: { created: Date.now() },
+      agent: task.agent,
+      model: task.model,
+    })
+    await Session.updatePart({
+      id: Identifier.ascending("part"),
+      messageID: msgID,
+      sessionID,
+      type: "text",
+      synthetic: true,
+      text,
+    })
   }
 }
