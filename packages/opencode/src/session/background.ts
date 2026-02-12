@@ -48,7 +48,10 @@ export namespace SessionBackground {
   }
 
   async function wake(sessionID: string) {
-    const session = await Session.get(sessionID)
+    const session = await Session.get(sessionID).catch(() => {
+      log.warn("session not found, skipping wake", { sessionID })
+      return undefined
+    })
     if (!session) {
       return
     }
