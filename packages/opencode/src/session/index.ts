@@ -583,6 +583,7 @@ export namespace Session {
       for (const child of await children(sessionID)) {
         await remove(child.id)
       }
+      SessionPrompt.cancel(sessionID)
       await unshare(sessionID).catch(() => {})
       // CASCADE delete handles messages and parts automatically
       Database.use((db) => {
