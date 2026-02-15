@@ -11,40 +11,38 @@ export namespace SessionBackground {
 
   const state = Instance.state(
     () => {
-      const staged = new Map<string, Session.BackgroundTask[]>()
-      return { staged, initialized: false }
+      const finished = new Map<string, Session.BackgroundTask[]>()
+      const unsubscribes = [
+        Bus.subscribe(Session.Event.BackgroundTaskCompleted, async (event) => {
+          const sessionID = event.properties.sessionID
+          const task = event.properties.task
+
+          await addFinishedTask(sessionID, task).catch((err) => {
+            log.error("failed to stage background task", { sessionID, error: err })
+          })
+          await wake(sessionID).catch((err) => {
+            log.error("failed to wake for finished tasks", { sessionID, error: err })
+          })
+        }),
+        Bus.subscribe(SessionStatus.Event.Status, async (event) => {
+          const sessionID = event.properties.sessionID
+
+          await wake(sessionID).catch((err) => {
+            log.error("failed to wake for finished tasks", { sessionID, error: err })
+          })
+        }),
+      ]
+      return { finished, unsubscribes }
     },
     async (current) => {
-      current.staged.clear()
-      current.initialized = false
+      for (const unsubscribe of current.unsubscribes) {
+        unsubscribe()
+      }
     },
   )
 
   export function init() {
-    if (state().initialized) {
-      return
-    }
-    state().initialized = true
-
-    Bus.subscribe(Session.Event.BackgroundTaskCompleted, async (event) => {
-      const sessionID = event.properties.sessionID
-      const task = event.properties.task
-
-      await stageTask(sessionID, task).catch((err) => {
-        log.error("failed to stage background task", { sessionID, error: err })
-      })
-      await wake(sessionID).catch((err) => {
-        log.error("failed to wake for staged tasks", { sessionID, error: err })
-      })
-    })
-
-    Bus.subscribe(SessionStatus.Event.Status, async (event) => {
-      const sessionID = event.properties.sessionID
-
-      await wake(sessionID).catch((err) => {
-        log.error("failed to wake for staged tasks", { sessionID, error: err })
-      })
-    })
+    return state()
   }
 
   async function wake(sessionID: string) {
@@ -57,7 +55,7 @@ export namespace SessionBackground {
     }
 
     const s = state()
-    const tasks = s.staged.get(sessionID)
+    const tasks = s.finished.get(sessionID)
     if (!tasks || tasks.length === 0) {
       return
     }
@@ -67,17 +65,17 @@ export namespace SessionBackground {
       return
     }
 
-    s.staged.delete(sessionID)
+    s.finished.delete(sessionID)
     SessionStatus.set(sessionID, { type: "busy" })
     await SessionPrompt.loop({ sessionID })
   }
 
-  async function stageTask(sessionID: string, task: Session.BackgroundTask) {
+  async function addFinishedTask(sessionID: string, task: Session.BackgroundTask) {
     await updateTaskMessage(sessionID, task)
 
-    const staged = state().staged
-    const tasks = staged.get(sessionID) ?? []
-    staged.set(sessionID, tasks)
+    const finished = state().finished
+    const tasks = finished.get(sessionID) ?? []
+    finished.set(sessionID, tasks)
     tasks.push(task)
   }
 
