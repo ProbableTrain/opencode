@@ -1,0 +1,46 @@
+name: release-rook
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (e.g. 1.2.15-bg.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build linux-x64 binary
+        working-directory: packages/opencode
+        run: bun run script/build.ts --single
+        env:
+          OPENCODE_VERSION: ${{ inputs.version }}
+          OPENCODE_CHANNEL: latest
+
+      - name: Package binary
+        run: |
+          cd packages/opencode/dist/opencode-linux-x64/bin
+          tar -czf /tmp/opencode-linux-x64.tar.gz opencode
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ inputs.version }}" \
+            --title "v${{ inputs.version }}" \
+            --notes "OpenCode v1.2.15 + background subagents (cherry-picked from [PR #13261](https://github.com/anomalyco/opencode/pull/13261))" \
+            /tmp/opencode-linux-x64.tar.gz
